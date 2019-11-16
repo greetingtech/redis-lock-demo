@@ -77,10 +77,11 @@ public class RedisLock {
                     Collections.singletonList(id)
             );
             if (evalResult != null && UNLOCK_SUCCESS.equals(evalResult)) {
-                lockId.remove();
                 return;
             }
             throw new RedisLockException("not the lock owner");
+        } finally {
+            lockId.remove();
         }
     }
 
