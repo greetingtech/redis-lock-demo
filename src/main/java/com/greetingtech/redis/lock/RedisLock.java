@@ -68,7 +68,7 @@ public class RedisLock {
     public void unlock() {
         String id = lockId.get();
         if (id == null) {
-            throw new RedisLockException("not got the lock");
+            throw new RedisLockException("not the lock owner");
         }
         try (Jedis resource = pool.getResource()) {
             Object evalResult = resource.eval(
