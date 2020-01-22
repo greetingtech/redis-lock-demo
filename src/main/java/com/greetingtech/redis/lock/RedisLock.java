@@ -6,6 +6,7 @@ import redis.clients.jedis.params.SetParams;
 
 import java.util.Collections;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * @author greetingtech
@@ -17,71 +18,70 @@ public class RedisLock {
 
     private static final Long UNLOCK_SUCCESS = 1L;
 
+    private static final ReentrantLock localLock = new ReentrantLock();
+
     static {
-        StringBuilder builder = new StringBuilder();
-        builder.append("if redis.call('get', KEYS[1]) == ARGV[1] ");
-        builder.append("then return redis.call('del', KEYS[1]) ");
-        builder.append("else return 0 ");
-        builder.append("end");
-        UNLOCK_SCRIPT = builder.toString();
+        String tempStr = "if redis.call('get', KEYS[1]) == ARGV[1] ";
+        tempStr += "then return redis.call('del', KEYS[1]) ";
+        tempStr += "else return 0 ";
+        tempStr += "end";
+        UNLOCK_SCRIPT = tempStr;
     }
 
     private final JedisPool pool;
 
     private final String key;
 
-    private final LockIdGenerator lockIdGenerator;
+    private final String lockId;
 
-    private final ThreadLocal<String> lockId = new ThreadLocal<>();
-
-    RedisLock(JedisPool pool, LockIdGenerator lockIdGenerator, String key) {
+    RedisLock(JedisPool pool, String lockId, String key) {
         this.pool = pool;
-        this.lockIdGenerator = lockIdGenerator;
         this.key = key;
+        this.lockId = lockId;
     }
 
-    public boolean tryLock(int secondsToExpire, long timeout) throws InterruptedException {
-        if (lockId.get() != null) {
-            throw new RedisLockException("not support re lock");
-        }
-        String newLockId = lockIdGenerator.nextId();
-        try (Jedis resource = pool.getResource()) {
-            SetParams setParams = new SetParams();
-            setParams.nx().ex(secondsToExpire);
-            long begin = System.currentTimeMillis();
-            while (true) {
-                String set = null;
-                set = resource.set(key, newLockId, setParams);
-                if (set != null) {
-                    lockId.set(newLockId);
-                    return true;
+    public boolean tryLock(int secondsToExpire, long timeout) {
+        localLock.lock();
+        try {
+            try (Jedis resource = pool.getResource()) {
+                SetParams setParams = new SetParams();
+                setParams.nx().ex(secondsToExpire);
+                long begin = System.currentTimeMillis();
+                while (true) {
+                    String set = resource.set(key, lockId, setParams);
+                    if (set != null) {
+                        return true;
+                    }
+                    if (System.currentTimeMillis() - begin >= timeout) {
+                        localLock.unlock();
+                        return false;
+                    }
+                    int sleepTime = ThreadLocalRandom.current().nextInt(100);
+                    Thread.sleep(sleepTime);
                 }
-                if (System.currentTimeMillis() - begin >= timeout) {
-                    return false;
-                }
-                int sleepTime = ThreadLocalRandom.current().nextInt(100);
-                Thread.sleep(sleepTime);
             }
+        } catch (Throwable t) {
+            localLock.unlock();
+            return false;
         }
     }
 
     public void unlock() {
-        String id = lockId.get();
-        if (id == null) {
+        if (!localLock.isHeldByCurrentThread()) {
             throw new RedisLockException("not the lock owner");
         }
         try (Jedis resource = pool.getResource()) {
             Object evalResult = resource.eval(
                     UNLOCK_SCRIPT,
                     Collections.singletonList(key),
-                    Collections.singletonList(id)
+                    Collections.singletonList(lockId)
             );
             if (evalResult != null && UNLOCK_SUCCESS.equals(evalResult)) {
                 return;
             }
             throw new RedisLockException("not the lock owner");
         } finally {
-            lockId.remove();
+            localLock.unlock();
         }
     }
 

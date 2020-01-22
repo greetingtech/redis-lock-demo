@@ -31,7 +31,7 @@ public class RedisLockFactory {
             throw new IllegalArgumentException("key can not be empty");
         }
         String realKey = prefixKey + key;
-        RedisLock lock = new RedisLock(pool, lockIdGenerator, realKey);
+        RedisLock lock = new RedisLock(pool, lockIdGenerator.nextId(), realKey);
         return lock;
     }
 
