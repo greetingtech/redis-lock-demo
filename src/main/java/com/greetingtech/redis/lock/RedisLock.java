@@ -34,6 +34,8 @@ public class RedisLock {
 
     private final String lockId;
 
+    private boolean locked = false;
+
     RedisLock(JedisPool pool, String lockId, String key) {
         this.pool = pool;
         this.key = key;
@@ -42,6 +44,9 @@ public class RedisLock {
 
     public boolean tryLock(int secondsToExpire, long timeout) {
         localLock.lock();
+        if (locked) {
+            return true;
+        }
         try {
             try (Jedis resource = pool.getResource()) {
                 SetParams setParams = new SetParams();
@@ -50,10 +55,12 @@ public class RedisLock {
                 while (true) {
                     String set = resource.set(key, lockId, setParams);
                     if (set != null) {
+                        locked = true;
                         return true;
                     }
                     if (System.currentTimeMillis() - begin >= timeout) {
                         localLock.unlock();
+                        locked = false;
                         return false;
                     }
                     int sleepTime = ThreadLocalRandom.current().nextInt(100);
@@ -62,6 +69,7 @@ public class RedisLock {
             }
         } catch (Throwable t) {
             localLock.unlock();
+            locked = false;
             return false;
         }
     }
@@ -81,6 +89,7 @@ public class RedisLock {
             }
             throw new RedisLockException("not the lock owner");
         } finally {
+            locked = false;
             localLock.unlock();
         }
     }
